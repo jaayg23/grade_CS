@@ -255,6 +255,7 @@ def entrenar(modelo, X_train, r_train, X_val, r_val,
             end = min(start + batch_size, n_samples)
             batch_idx = indices[start:end]
 
+
             X_batch = X_train[batch_idx]
             r_batch = r_train[batch_idx]
 
@@ -317,6 +318,15 @@ def _run_k(precios, activos, k, hidden=64, epochs=100,
     r_train = torch.FloatTensor(r[:T_train])
     X_val   = torch.FloatTensor(X[T_train:])
     r_val   = torch.FloatTensor(r[T_train:])
+
+    # Crea un tensor de pesos uniformes (1/9 para cada activo)
+    w_eq_train = torch.ones_like(r_train) / n
+    sharpe_eq_train = sharpe_loss(w_eq_train, r_train).item() * -1
+
+    w_eq_val = torch.ones_like(r_val) / n
+    sharpe_eq_val = sharpe_loss(w_eq_val, r_val).item() * -1
+
+    print(f"Baseline (1/n) -> Train Sharpe: {sharpe_eq_train:.4f} | Val Sharpe: {sharpe_eq_val:.4f}")
 
     modelo = LSTMPortfolio(n_activos=n, k=k, hidden_size=hidden)
     historial = entrenar(modelo, X_train, r_train, X_val, r_val,
