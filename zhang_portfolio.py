@@ -188,7 +188,7 @@ class LSTMPortfolio(nn.Module):
         (2) Σ w_i = 1                 (presupuesto)
     """
 
-    def __init__(self, n_activos: int, k: int = 50, hidden_size: int = 64):
+    def __init__(self, n_activos: int, k: int = 50, hidden_size: int = 64, dropout: float = 0.3):
         super().__init__()
 
         self.n_activos = n_activos
@@ -200,12 +200,14 @@ class LSTMPortfolio(nn.Module):
             num_layers=1,
             batch_first=True
         )
+        self.dropout = nn.Dropout(p=dropout)
         self.linear = nn.Linear(hidden_size, n_activos)
         self.softmax = nn.Softmax(dim=1)
 
     def forward(self, x):
         lstm_out, (h_n, c_n) = self.lstm(x)
         last_hidden = h_n.squeeze(0)
+        last_hidden = self.dropout(last_hidden)
         z_raw = self.linear(last_hidden)
         w = self.softmax(z_raw)
         return w
