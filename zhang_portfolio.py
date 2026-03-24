@@ -29,7 +29,6 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 import copy
 
 
@@ -359,250 +358,113 @@ def _run_k(precios, activos, k, hidden=64, epochs=100,
 
 
 def main():
-    """Pipeline comparativo: k = 50, 100, 250 días."""
+    """Pipeline con ventana fija k=50 días."""
 
     print("=" * 60)
     print("  Deep Learning for Portfolio Optimization")
     print("  Zhang, Zohren & Roberts (2020) — Replicación")
-    print("  Comparativa ventanas: k = 50 | 100 | 250")
+    print("  Ventana lookback: k = 50 días")
     print("=" * 60)
 
     activos       = ['ECOPETROL.CL', 'GEB.CL', 'PFCIBEST.CL', 'CIBEST.CL',
                      'GOOGL', 'AAPL', 'BVC.CL', 'NKE', 'IVV']
     stocks_en_usd = ['AAPL', 'IVV', 'GOOGL', 'NKE']
-    ventanas      = [50, 100, 250]
+    k             = 50
     epochs        = 100
 
-    # --- Datos (una sola descarga para todas las ventanas) ---
-    print("\n[1] Descargando precios históricos (2021-01-01 → 2026-03-16)...")
-    df_precios = descargar_precios(activos, '2021-01-01', '2026-03-16', stocks_en_usd)
+    # --- Datos ---
+    print("\n[1] Descargando precios históricos (2015-01-01 → 2026-03-16)...")
+    df_precios = descargar_precios(activos, '2015-01-01', '2026-03-16', stocks_en_usd)
     precios    = df_precios.values
     n          = precios.shape[1]
     print(f"    Precios shape: {precios.shape}  (T_total={precios.shape[0]}, n={n})")
 
-    # --- Entrenamiento por ventana ---
-    resultados = {}
-    for k in ventanas:
-        print(f"\n[k={k:3d}] Entrenando LSTM — ventana {k} días ...")
-        res = _run_k(precios, activos, k=k, epochs=epochs)
-        resultados[k] = res
-        print(f"  → Sharpe val: {res['sharpe_val']:+.4f} | "
-              f"Ret. anual: {res['retorno_anual']*100:.2f}% | "
-              f"Vol. anual: {res['vol_anual']*100:.2f}%  "
-              f"[{res['T_train']} train / {res['T_val']} val]")
+    # --- Entrenamiento ---
+    print(f"\n[k={k}] Entrenando LSTM — ventana {k} días ...")
+    res = _run_k(precios, activos, k=k, epochs=epochs)
+    print(f"  → Sharpe val: {res['sharpe_val']:+.4f} | "
+          f"Ret. anual: {res['retorno_anual']*100:.2f}% | "
+          f"Vol. anual: {res['vol_anual']*100:.2f}%  "
+          f"[{res['T_train']} train / {res['T_val']} val]")
 
-    # --- Tabla resumen ---
-    print("\n" + "=" * 60)
-    print("  RESUMEN COMPARATIVO")
-    print(f"  {'k':>5}  {'Sharpe val':>11}  {'Ret. anual':>11}  {'Vol. anual':>11}")
-    print("  " + "-" * 46)
-    for k, res in resultados.items():
-        print(f"  {k:>5}  {res['sharpe_val']:>+11.4f}  "
-              f"{res['retorno_anual']*100:>10.2f}%  "
-              f"{res['vol_anual']*100:>10.2f}%")
-    print("=" * 60)
-
-    # --- Guardar pesos del mejor modelo (mayor Sharpe) ---
-    mejor_k  = max(resultados, key=lambda k: resultados[k]['sharpe_val'])
-    mejor    = resultados[mejor_k]
+    # --- Guardar pesos ---
     registro = {
-        'k':             int(mejor_k),
-        'sharpe_val':    float(mejor['sharpe_val']),
-        'retorno_anual': float(mejor['retorno_anual']),
-        'vol_anual':     float(mejor['vol_anual']),
-        'pesos':         {activos[i]: float(mejor['w_promedio'][i])
+        'k':             k,
+        'sharpe_val':    float(res['sharpe_val']),
+        'retorno_anual': float(res['retorno_anual']),
+        'vol_anual':     float(res['vol_anual']),
+        'pesos':         {activos[i]: float(res['w_promedio'][i])
                           for i in range(len(activos))},
     }
     import json
     pesos_file = 'zhang_best_weights.json'
     with open(pesos_file, 'w', encoding='utf-8') as f:
         json.dump(registro, f, indent=2, ensure_ascii=False)
-    print(f"\n  [✓] Pesos del mejor modelo (k={mejor_k}, "
-          f"Sharpe={mejor['sharpe_val']:+.4f}) guardados en '{pesos_file}'")
+    print(f"\n  [✓] Pesos guardados en '{pesos_file}' "
+          f"(k={k}, Sharpe={res['sharpe_val']:+.4f})")
 
-    # --- Visualización comparativa ---
-    graficar_comparativa(resultados, activos)
+    # --- Visualización ---
+    graficar_sharpe_epocas(res)
 
-    return resultados
+    return res
 
 
-#Visualizar comparativas
+#Visualizar Sharpe ratio por época
 
-def graficar_comparativa(resultados: dict, activos: list):
+def graficar_sharpe_epocas(res: dict):
     """
-    Dashboard comparativo de 3 ventanas (k=50, 100, 250).
-
-    Layout (4 filas × 3 columnas):
-      Fila 0  — Sharpe train vs val por época  (una curva por k, col completa)
-      Fila 1  — Sharpe final en validación     (barras comparativas)
-      Fila 2  — Retorno acumulado en val       (una línea por k)
-      Fila 3  — Ponderadores promedio w_i      (grouped bar, un grupo por k)
+    Gráfico único: evolución del Sharpe ratio (train y val) por época.
     """
-    BG_FIG   = '#0d1117'
-    BG_AX    = '#161b22'
-    GRID_C   = '#30363d'
-    TXT      = 'white'
-    SUBT     = '#8b949e'
+    BG_FIG = '#0d1117'
+    BG_AX  = '#161b22'
+    GRID_C = '#30363d'
+    TXT    = 'white'
+    SUBT   = '#8b949e'
+    COLOR  = '#58a6ff'
 
-    # Colores por ventana
-    COLORS = {50: '#58a6ff', 100: '#3fb950', 250: '#f78166'}
-    DASH   = {50: '-',       100: '--',      250: '-.'}
+    h      = res['historial']
+    k      = res['k']
+    epocas = range(1, len(h['train_sharpe']) + 1)
 
-    ventanas       = sorted(resultados.keys())
-    nombres_cortos = [t.replace('.CL', '') for t in activos]
-    n_activos      = len(activos)
-
-    fig = plt.figure(figsize=(18, 20))
+    fig, ax = plt.subplots(figsize=(12, 5))
     fig.patch.set_facecolor(BG_FIG)
-    gs  = gridspec.GridSpec(4, 3, figure=fig, hspace=0.55, wspace=0.35)
+    ax.set_facecolor(BG_AX)
+    ax.tick_params(colors=SUBT)
+    ax.spines[:].set_color(GRID_C)
+    ax.yaxis.grid(True, color=GRID_C, lw=0.5)
+    ax.xaxis.grid(False)
 
-    def _style(ax):
-        ax.set_facecolor(BG_AX)
-        ax.tick_params(colors=SUBT)
-        ax.spines[:].set_color(GRID_C)
-        ax.yaxis.grid(True, color=GRID_C, lw=0.5)
-        ax.xaxis.grid(False)
+    ax.plot(epocas, h['train_sharpe'],
+            color=COLOR, lw=1.8, alpha=0.5, label='Train')
+    ax.plot(epocas, h['val_sharpe'],
+            color=COLOR, lw=2.2, label='Validación')
 
-    # ── Fila 0 col 0..2: Sharpe por época (train + val, una línea por k) ──
-    ax_ev = fig.add_subplot(gs[0, :])
-    _style(ax_ev)
-    for k in ventanas:
-        h = resultados[k]['historial']
-        epocas_k = range(1, len(h['train_sharpe']) + 1)
-        ax_ev.plot(epocas_k, h['train_sharpe'],
-                   color=COLORS[k], lw=1.8, linestyle=DASH[k],
-                   alpha=0.55, label=f'k={k} train')
-        ax_ev.plot(epocas_k, h['val_sharpe'],
-                   color=COLORS[k], lw=2.2, linestyle=DASH[k],
-                   label=f'k={k} val')
-        # Marcar el mejor val
-        best_idx = int(np.argmax(h['val_sharpe']))
-        best_val = h['val_sharpe'][best_idx]
-        ax_ev.scatter(best_idx + 1, best_val,
-                      color=COLORS[k], s=60, zorder=5)
-        ax_ev.annotate(f'SR={best_val:.3f}',
-                       xy=(best_idx + 1, best_val),
-                       xytext=(best_idx + 1 + len(epocas_k)*0.03, best_val + 0.03),
-                       color=COLORS[k], fontsize=8,
-                       arrowprops=dict(arrowstyle='->', color=COLORS[k], lw=1))
-    ax_ev.axhline(0, color=GRID_C, lw=0.8, linestyle=':')
-    ax_ev.set_title(
-        r'Evolución del Sharpe Ratio — $L_T = \bar{r}_p\,/\,\sigma_p$'
-        '\n(líneas tenues = train  ·  líneas sólidas = val)',
+    best_idx = int(np.argmax(h['val_sharpe']))
+    best_val = h['val_sharpe'][best_idx]
+    ax.scatter(best_idx + 1, best_val, color=COLOR, s=80, zorder=5)
+    ax.annotate(f'Mejor SR val = {best_val:.4f}',
+                xy=(best_idx + 1, best_val),
+                xytext=(best_idx + 1 + len(epocas) * 0.04, best_val + 0.03),
+                color=COLOR, fontsize=9,
+                arrowprops=dict(arrowstyle='->', color=COLOR, lw=1))
+
+    ax.axhline(0, color=GRID_C, lw=0.8, linestyle=':')
+    ax.set_title(
+        rf'Sharpe Ratio por Época — LSTM k={k}  '
+        r'($L_T = \bar{{r}}_p\,/\,\sigma_p$)'
+        '\n(línea tenue = train  ·  línea sólida = validación)',
         color=TXT, fontsize=12, pad=10)
-    ax_ev.set_xlabel('Época', color=SUBT, fontsize=10)
-    ax_ev.set_ylabel('Sharpe Ratio  $L_T$', color=SUBT, fontsize=10)
-    ax_ev.legend(facecolor=BG_AX, edgecolor=GRID_C,
-                 labelcolor=TXT, fontsize=9, ncol=3)
+    ax.set_xlabel('Época', color=SUBT, fontsize=10)
+    ax.set_ylabel(r'Sharpe Ratio $L_T$', color=SUBT, fontsize=10)
+    ax.legend(facecolor=BG_AX, edgecolor=GRID_C, labelcolor=TXT, fontsize=10)
 
-    # ── Fila 1 col 0: Sharpe final (barras) ──────────────────────────────
-    ax_sr = fig.add_subplot(gs[1, 0])
-    _style(ax_sr)
-    sharpes = [resultados[k]['sharpe_val'] for k in ventanas]
-    bars    = ax_sr.bar([str(k) for k in ventanas], sharpes,
-                        color=[COLORS[k] for k in ventanas],
-                        edgecolor=BG_AX, linewidth=0.5)
-    for bar, val in zip(bars, sharpes):
-        ax_sr.text(bar.get_x() + bar.get_width()/2,
-                   bar.get_height() + (0.005 if val >= 0 else -0.025),
-                   f'{val:+.4f}', ha='center', va='bottom',
-                   color=TXT, fontsize=9)
-    ax_sr.axhline(0, color=GRID_C, lw=0.8)
-    ax_sr.set_title('Sharpe ratio final (validación)', color=TXT, fontsize=11, pad=8)
-    ax_sr.set_xlabel('Ventana k (días)', color=SUBT, fontsize=10)
-    ax_sr.set_ylabel('$L_T$', color=SUBT, fontsize=10)
-
-    # ── Fila 1 col 1: Retorno anualizado (barras) ─────────────────────────
-    ax_ret = fig.add_subplot(gs[1, 1])
-    _style(ax_ret)
-    rets = [resultados[k]['retorno_anual'] * 100 for k in ventanas]
-    bars2 = ax_ret.bar([str(k) for k in ventanas], rets,
-                       color=[COLORS[k] for k in ventanas],
-                       edgecolor=BG_AX, linewidth=0.5)
-    for bar, val in zip(bars2, rets):
-        ax_ret.text(bar.get_x() + bar.get_width()/2,
-                    bar.get_height() + (0.2 if val >= 0 else -1.2),
-                    f'{val:+.2f}%', ha='center', va='bottom',
-                    color=TXT, fontsize=9)
-    ax_ret.axhline(0, color=GRID_C, lw=0.8)
-    ax_ret.set_title('Retorno anualizado (validación)', color=TXT, fontsize=11, pad=8)
-    ax_ret.set_xlabel('Ventana k (días)', color=SUBT, fontsize=10)
-    ax_ret.set_ylabel('Ret. anual (%)', color=SUBT, fontsize=10)
-
-    # ── Fila 1 col 2: Volatilidad anualizada (barras) ─────────────────────
-    ax_vol = fig.add_subplot(gs[1, 2])
-    _style(ax_vol)
-    vols = [resultados[k]['vol_anual'] * 100 for k in ventanas]
-    bars3 = ax_vol.bar([str(k) for k in ventanas], vols,
-                       color=[COLORS[k] for k in ventanas],
-                       edgecolor=BG_AX, linewidth=0.5)
-    for bar, val in zip(bars3, vols):
-        ax_vol.text(bar.get_x() + bar.get_width()/2,
-                    bar.get_height() + 0.1,
-                    f'{val:.2f}%', ha='center', va='bottom',
-                    color=TXT, fontsize=9)
-    ax_vol.set_title('Volatilidad anualizada (validación)', color=TXT, fontsize=11, pad=8)
-    ax_vol.set_xlabel('Ventana k (días)', color=SUBT, fontsize=10)
-    ax_vol.set_ylabel('Vol. anual (%)', color=SUBT, fontsize=10)
-
-    # ── Fila 2 col 0..2: Retorno acumulado ───────────────────────────────
-    ax_cum = fig.add_subplot(gs[2, :])
-    _style(ax_cum)
-    for k in ventanas:
-        r_p = resultados[k]['r_p_val']
-        cum  = (1 + r_p).cumprod()
-        ax_cum.plot(cum, color=COLORS[k], lw=2,
-                    linestyle=DASH[k], label=f'k={k}  (final={cum[-1]:.3f})')
-        ax_cum.fill_between(range(len(cum)), 1, cum,
-                            where=cum >= 1, alpha=0.08, color=COLORS[k])
-        ax_cum.fill_between(range(len(cum)), 1, cum,
-                            where=cum < 1,  alpha=0.08, color=COLORS[k])
-    ax_cum.axhline(1, color=GRID_C, lw=0.8, linestyle=':')
-    ax_cum.set_title(r'Retorno acumulado en validación  $\prod(1+r_{p,t})$',
-                     color=TXT, fontsize=12, pad=8)
-    ax_cum.set_xlabel('Días (validación)', color=SUBT, fontsize=10)
-    ax_cum.set_ylabel('Valor del portafolio (base 1)', color=SUBT, fontsize=10)
-    ax_cum.legend(facecolor=BG_AX, edgecolor=GRID_C,
-                  labelcolor=TXT, fontsize=10)
-
-    # ── Fila 3 col 0..2: Ponderadores agrupados por activo ───────────────
-    ax_w = fig.add_subplot(gs[3, :])
-    _style(ax_w)
-    x      = np.arange(n_activos)
-    width  = 0.25
-    offset = [-width, 0, width]
-    for i, k in enumerate(ventanas):
-        w = resultados[k]['w_promedio']
-        bars_w = ax_w.bar(x + offset[i], w, width,
-                          color=COLORS[k], edgecolor=BG_AX,
-                          linewidth=0.4, label=f'k={k}')
-        for bar, val in zip(bars_w, w):
-            if val > 0.04:
-                ax_w.text(bar.get_x() + bar.get_width()/2,
-                          bar.get_height() + 0.003,
-                          f'{val:.2f}', ha='center', va='bottom',
-                          color=TXT, fontsize=7)
-    ax_w.axhline(1 / n_activos, color='#f0883e', lw=1.2,
-                 linestyle='--', label='Equal weight')
-    ax_w.set_title(r'Ponderadores promedio $\bar{w}_i$ por activo y ventana',
-                   color=TXT, fontsize=12, pad=8)
-    ax_w.set_xticks(x)
-    ax_w.set_xticklabels(nombres_cortos, color=TXT, fontsize=9)
-    ax_w.set_ylabel(r'$w_i$', color=SUBT, fontsize=10)
-    ax_w.set_ylim(0, max(
-        resultados[k]['w_promedio'].max() for k in ventanas
-    ) * 1.3)
-    ax_w.legend(facecolor=BG_AX, edgecolor=GRID_C,
-                labelcolor=TXT, fontsize=10)
-
-    # ── Título global ─────────────────────────────────────────────────────
     fig.suptitle(
-        'Deep Learning for Portfolio Optimization  —  Comparativa ventanas lookback\n'
-        'Zhang, Zohren & Roberts (2020)  ·  Notación Medina (revcuaeco)  ·  2021-01-01 → 2026-03-16',
-        color=TXT, fontsize=13, y=0.995
-    )
+        'Deep Learning for Portfolio Optimization  —  k=50 días\n'
+        'Zhang, Zohren & Roberts (2020)  ·  2015-01-01 → 2026-03-16',
+        color=TXT, fontsize=11, y=1.02)
 
-    out = 'sharpe_comparativa.png'
+    out = 'sharpe_epocas.png'
+    plt.tight_layout()
     plt.savefig(out, dpi=150, bbox_inches='tight',
                 facecolor=fig.get_facecolor())
     print(f"\n  [✓] Figura guardada en '{out}'")
