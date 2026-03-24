@@ -245,13 +245,14 @@ def entrenar(modelo, X_train, r_train, X_val, r_val,
     n_samples = X_train.shape[0]
 
     best_val_sharpe = -float('inf')
-    best_weights = None
+    best_weights = copy.deepcopy(modelo.state_dict())
     patience_counter = 0
 
     for epoch in range(epochs):
         modelo.train()
         indices = torch.randperm(n_samples)
         for start in range(0, n_samples, batch_size):
+            #Condicionante para no exceder el tamaño de la muestra
             end = min(start + batch_size, n_samples)
             batch_idx = indices[start:end]
 
