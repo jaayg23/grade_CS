@@ -240,7 +240,7 @@ def entrenar(modelo, X_train, r_train, X_val, r_val,
         θ_new := θ_old + α · ∂L_T/∂θ
     (En la práctica usamos Adam.)
     """
-    optimizer = torch.optim.Adam(modelo.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(modelo.parameters(), lr=lr, weight_decay=1e-4)
 
     historial = {'train_sharpe': [], 'val_sharpe': []}
     n_samples = X_train.shape[0]
@@ -372,7 +372,7 @@ def main():
                      'GOOGL', 'AAPL', 'BVC.CL', 'NKE', 'IVV']
     stocks_en_usd = ['AAPL', 'IVV', 'GOOGL', 'NKE']
     k             = 50
-    epochs        = 100
+    epochs        = 200
 
     # --- Datos ---
     print("\n[1] Descargando precios históricos (2015-01-01 → 2026-03-16)...")
