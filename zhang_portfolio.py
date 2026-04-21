@@ -161,10 +161,12 @@ def crear_ventanas(precios: np.ndarray, k: int = 50):
 
         # Concatenar: [p_norm_1, r_1, p_norm_2, r_2, ..., p_norm_n, r_n]
         # Resultado: (k, 2n)
-        X[t] = np.column_stack([
-            val for i in range(n)
-            for val in (p_norm[:, i:i+1], ventana_retornos[:, i:i+1])
-        ])
+        columnas = []
+        for i in range(n):
+            columnas.append(p_norm[:, i:i+1])
+            columnas.append(ventana_retornos[:, i:i+1])
+
+        X[t] = np.column_stack(columnas)
 
         # Retorno del día siguiente: lo que multiplicamos por w para obtener r_p
         r_futuro[t] = retornos[fin]
@@ -232,7 +234,7 @@ def sharpe_loss(w, r):
 
 def entrenar(modelo, X_train, r_train, X_val, r_val,
              epochs=100, lr=0.001, batch_size=64,
-             patience=15, verbose=True):
+             patience=60, verbose=True):
     """
     Entrena el modelo LSTM maximizando el Sharpe ratio con early stopping.
 
@@ -303,9 +305,177 @@ def entrenar(modelo, X_train, r_train, X_val, r_val,
     modelo.load_state_dict(best_weights)
     return historial
 
+#Walk-Forward Cross-Validation
+
+def walk_forward_cv(precios, activos, k=50, n_folds=5,
+                    hidden=32, epochs=100, batch_size=64, lr=0.001,
+                    min_train_ratio=0.5, verbose=True):
+    """
+    Walk-Forward Cross-Validation con ventana expandible.
+
+    En cada fold el conjunto de entrenamiento crece (expanding window):
+        Fold 1: train [0, T0],       val [T0,    T0+Δ]
+        Fold 2: train [0, T0+Δ],     val [T0+Δ,  T0+2Δ]
+        ...
+
+    La regularización L2 ya está incluida en el optimizador Adam
+    (weight_decay=1e-4 en entrenar()).
+
+    Parámetros
+    ----------
+    precios       : np.ndarray, shape (T_total, n)
+    activos       : list[str]
+    k             : int   — ventana lookback
+    n_folds       : int   — número de folds
+    min_train_ratio : float — fracción mínima para el primer entrenamiento
+
+    Retorna
+    -------
+    resultados : list[dict] — un dict por fold con historial y métricas
+    """
+    X, r = crear_ventanas(precios, k=k)
+    T = X.shape[0]
+    n = precios.shape[1]
+
+    min_train_size = int(T * min_train_ratio)
+    remaining      = T - min_train_size
+    val_size       = max(1, remaining // n_folds)
+
+    resultados = []
+
+    for fold in range(n_folds):
+        val_start = min_train_size + fold * val_size
+        val_end   = min(val_start + val_size, T)
+
+        if val_start >= T:
+            break
+
+        X_train = torch.FloatTensor(X[:val_start])
+        r_train = torch.FloatTensor(r[:val_start])
+        X_val   = torch.FloatTensor(X[val_start:val_end])
+        r_val   = torch.FloatTensor(r[val_start:val_end])
+
+        if verbose:
+            print(f"\n[Fold {fold+1}/{n_folds}] "
+                  f"Train: [0, {val_start}]  |  Val: [{val_start}, {val_end}]  "
+                  f"(train={val_start}, val={val_end - val_start})")
+
+        modelo = LSTMPortfolio(n_activos=n, k=k, hidden_size=hidden)
+        historial = entrenar(modelo, X_train, r_train, X_val, r_val,
+                             epochs=epochs, lr=lr, batch_size=batch_size,
+                             patience=60, verbose=verbose)
+
+        modelo.eval()
+        with torch.no_grad():
+            w_final = modelo(X_val)
+            r_p     = (w_final * r_val).sum(dim=1).numpy()
+
+        sharpe_val    = float(r_p.mean() / (r_p.std() + 1e-8))
+        retorno_anual = r_p.mean() * 252
+        vol_anual     = r_p.std() * np.sqrt(252)
+        w_promedio    = w_final.mean(dim=0).numpy()
+
+        resultados.append({
+            'fold':          fold + 1,
+            'k':             k,
+            'historial':     historial,
+            'w_promedio':    w_promedio,
+            'r_p_val':       r_p,
+            'sharpe_val':    sharpe_val,
+            'retorno_anual': retorno_anual,
+            'vol_anual':     vol_anual,
+            'T_train':       val_start,
+            'T_val':         val_end - val_start,
+        })
+
+        if verbose:
+            print(f"  → Fold {fold+1} | Sharpe val: {sharpe_val:+.4f} | "
+                  f"Ret. anual: {retorno_anual*100:.2f}% | "
+                  f"Vol. anual: {vol_anual*100:.2f}%")
+
+    return resultados
+
+
+def graficar_walk_forward_cv(resultados: list, k: int = 50):
+    """
+    Grilla de subplots: un panel por fold mostrando la evolución del
+    Sharpe ratio (train y val) a lo largo de las épocas de entrenamiento.
+    """
+    BG_FIG  = '#0d1117'
+    BG_AX   = '#161b22'
+    GRID_C  = '#30363d'
+    TXT     = 'white'
+    SUBT    = '#8b949e'
+    COLORES = ['#58a6ff', '#3fb950', '#f78166', '#d2a8ff', '#ffa657']
+
+    n_folds = len(resultados)
+    ncols   = min(3, n_folds)
+    nrows   = (n_folds + ncols - 1) // ncols
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 4 * nrows))
+    fig.patch.set_facecolor(BG_FIG)
+
+    axes_flat = np.array(axes).flatten() if n_folds > 1 else np.array([axes])
+
+    for i, res in enumerate(resultados):
+        ax    = axes_flat[i]
+        color = COLORES[i % len(COLORES)]
+        h     = res['historial']
+        epocas = range(1, len(h['train_sharpe']) + 1)
+
+        ax.set_facecolor(BG_AX)
+        ax.tick_params(colors=SUBT)
+        ax.spines[:].set_color(GRID_C)
+        ax.yaxis.grid(True, color=GRID_C, lw=0.5)
+        ax.xaxis.grid(False)
+
+        ax.plot(epocas, h['train_sharpe'],
+                color=color, lw=1.5, alpha=0.40, label='Train')
+        ax.plot(epocas, h['val_sharpe'],
+                color=color, lw=2.2, label='Val')
+
+        best_idx = int(np.argmax(h['val_sharpe']))
+        best_val = h['val_sharpe'][best_idx]
+        ax.scatter(best_idx + 1, best_val, color=color, s=70, zorder=5)
+        offset_x = max(1, len(epocas) * 0.05)
+        ax.annotate(f'SR={best_val:.3f}',
+                    xy=(best_idx + 1, best_val),
+                    xytext=(best_idx + 1 + offset_x, best_val + 0.02),
+                    color=color, fontsize=8,
+                    arrowprops=dict(arrowstyle='->', color=color, lw=1))
+
+        ax.axhline(0, color=GRID_C, lw=0.8, linestyle=':')
+        ax.set_title(
+            f'Fold {res["fold"]}  —  train: {res["T_train"]} d  ·  val: {res["T_val"]} d\n'
+            f'Sharpe val: {res["sharpe_val"]:+.4f}',
+            color=TXT, fontsize=10)
+        ax.set_xlabel('Época', color=SUBT, fontsize=9)
+        ax.set_ylabel(r'Sharpe $L_T$', color=SUBT, fontsize=9)
+        ax.legend(facecolor=BG_AX, edgecolor=GRID_C, labelcolor=TXT, fontsize=9)
+
+    # Ocultar ejes sobrantes
+    for j in range(n_folds, len(axes_flat)):
+        axes_flat[j].set_visible(False)
+
+    sharpes = [r['sharpe_val'] for r in resultados]
+    fig.suptitle(
+        f'Walk-Forward CV — LSTM k={k} días  ·  L2 reg (weight_decay=1e-4)\n'
+        f'Sharpe promedio: {np.mean(sharpes):+.4f}  ·  '
+        f'min: {np.min(sharpes):+.4f}  ·  max: {np.max(sharpes):+.4f}\n'
+        'Zhang, Zohren & Roberts (2020)  ·  2015-01-01 → 2026-03-16',
+        color=TXT, fontsize=11, y=1.02)
+
+    plt.tight_layout()
+    out = 'walk_forward_cv.png'
+    plt.savefig(out, dpi=150, bbox_inches='tight',
+                facecolor=fig.get_facecolor())
+    print(f"\n  [✓] Figura guardada en '{out}'")
+    plt.show()
+
+
 #Comparativa de ventanas
 
-def _run_k(precios, activos, k, hidden=64, epochs=100,
+def _run_k(precios, activos, k, hidden=32, epochs=100,
            batch_size=64, lr=0.001, val_split=0.2):
     """Ejecuta el pipeline completo para una ventana k dada.
     Retorna dict con historial, w_promedio, r_p_val y métricas."""
@@ -381,34 +551,51 @@ def main():
     n          = precios.shape[1]
     print(f"    Precios shape: {precios.shape}  (T_total={precios.shape[0]}, n={n})")
 
-    # --- Entrenamiento ---
-    print(f"\n[k={k}] Entrenando LSTM — ventana {k} días ...")
-    res = _run_k(precios, activos, k=k, epochs=epochs)
-    print(f"  → Sharpe val: {res['sharpe_val']:+.4f} | "
-          f"Ret. anual: {res['retorno_anual']*100:.2f}% | "
-          f"Vol. anual: {res['vol_anual']*100:.2f}%  "
-          f"[{res['T_train']} train / {res['T_val']} val]")
+    # --- Walk-Forward Cross-Validation (5 folds, ventana expandible) ---
+    print(f"\n[2] Walk-Forward CV — k={k} días | L2 reg: weight_decay=1e-4")
+    print("-" * 60)
+    resultados_cv = walk_forward_cv(
+        precios, activos,
+        k=k, n_folds=5,
+        epochs=epochs, lr=0.001, batch_size=64,
+        min_train_ratio=0.5,
+        verbose=True,
+    )
 
-    # --- Guardar pesos ---
+    # --- Resumen por fold ---
+    print("\n" + "=" * 60)
+    print("  Resumen Walk-Forward CV")
+    print("=" * 60)
+    for r in resultados_cv:
+        print(f"  Fold {r['fold']} | Sharpe val: {r['sharpe_val']:+.4f} | "
+              f"Ret. anual: {r['retorno_anual']*100:.2f}% | "
+              f"Vol. anual: {r['vol_anual']*100:.2f}%")
+    sharpes = [r['sharpe_val'] for r in resultados_cv]
+    print(f"\n  Sharpe promedio: {np.mean(sharpes):+.4f}  "
+          f"(±{np.std(sharpes):.4f})")
+
+    # --- Guardar pesos del mejor fold ---
+    import json
+    mejor = max(resultados_cv, key=lambda r: r['sharpe_val'])
     registro = {
         'k':             k,
-        'sharpe_val':    float(res['sharpe_val']),
-        'retorno_anual': float(res['retorno_anual']),
-        'vol_anual':     float(res['vol_anual']),
-        'pesos':         {activos[i]: float(res['w_promedio'][i])
+        'fold':          mejor['fold'],
+        'sharpe_val':    float(mejor['sharpe_val']),
+        'retorno_anual': float(mejor['retorno_anual']),
+        'vol_anual':     float(mejor['vol_anual']),
+        'pesos':         {activos[i]: float(mejor['w_promedio'][i])
                           for i in range(len(activos))},
     }
-    import json
     pesos_file = 'zhang_best_weights.json'
     with open(pesos_file, 'w', encoding='utf-8') as f:
         json.dump(registro, f, indent=2, ensure_ascii=False)
-    print(f"\n  [✓] Pesos guardados en '{pesos_file}' "
-          f"(k={k}, Sharpe={res['sharpe_val']:+.4f})")
+    print(f"\n  [✓] Pesos del mejor fold ({mejor['fold']}) guardados en "
+          f"'{pesos_file}'  (Sharpe={mejor['sharpe_val']:+.4f})")
 
-    # --- Visualización ---
-    graficar_sharpe_epocas(res)
+    # --- Visualización: Sharpe por época para cada fold ---
+    graficar_walk_forward_cv(resultados_cv, k=k)
 
-    return res
+    return resultados_cv
 
 
 #Visualizar Sharpe ratio por época
