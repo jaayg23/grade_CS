@@ -373,9 +373,11 @@ def walk_forward_cv(precios, activos, k=50, n_folds=5,
             w_final = modelo(X_val)
             r_p     = (w_final * r_val).sum(dim=1).numpy()
 
-        sharpe_val    = float(r_p.mean() / (r_p.std() + 1e-8))
-        retorno_anual = r_p.mean() * 252
         vol_anual     = r_p.std() * np.sqrt(252)
+        # CAGR geométrico: descuenta el variance drag (μ·252 sobreestima)
+        retorno_anual = (1 + r_p).prod() ** (252 / len(r_p)) - 1
+        # Sharpe anualizado: SR_diario × √252
+        sharpe_val    = float(r_p.mean() / (r_p.std() + 1e-8)) * np.sqrt(252)
         w_promedio    = w_final.mean(dim=0).numpy()
 
         resultados.append({
@@ -392,8 +394,8 @@ def walk_forward_cv(precios, activos, k=50, n_folds=5,
         })
 
         if verbose:
-            print(f"  → Fold {fold+1} | Sharpe val: {sharpe_val:+.4f} | "
-                  f"Ret. anual: {retorno_anual*100:.2f}% | "
+            print(f"  → Fold {fold+1} | Sharpe anual: {sharpe_val:+.4f} | "
+                  f"CAGR: {retorno_anual*100:.2f}% | "
                   f"Vol. anual: {vol_anual*100:.2f}%")
 
     return resultados
@@ -488,9 +490,9 @@ def _run_k(precios, activos, k, hidden=32, epochs=100,
         
 
     w_promedio    = w_final.mean(dim=0).numpy()
-    sharpe_val    = float(r_p.mean() / (r_p.std() + 1e-8))
-    retorno_anual = r_p.mean() * 252
     vol_anual     = r_p.std() * np.sqrt(252)
+    retorno_anual = (1 + r_p).prod() ** (252 / len(r_p)) - 1
+    sharpe_val    = float(r_p.mean() / (r_p.std() + 1e-8)) * np.sqrt(252)
 
     return {
         'k':             k,
@@ -543,8 +545,8 @@ def main():
     print("  Resumen Walk-Forward CV")
     print("=" * 60)
     for r in resultados_cv:
-        print(f"  Fold {r['fold']} | Sharpe val: {r['sharpe_val']:+.4f} | "
-              f"Ret. anual: {r['retorno_anual']*100:.2f}% | "
+        print(f"  Fold {r['fold']} | Sharpe anual: {r['sharpe_val']:+.4f} | "
+              f"CAGR: {r['retorno_anual']*100:.2f}% | "
               f"Vol. anual: {r['vol_anual']*100:.2f}%")
     sharpes = [r['sharpe_val'] for r in resultados_cv]
     print(f"\n  Sharpe promedio: {np.mean(sharpes):+.4f}  "
