@@ -260,6 +260,9 @@ def entrenar(modelo, X_train, r_train, X_val, r_val,
             batch_idx = indices[start:end]
 
 
+            if end - start < 2:  # std() indefinido con 1 muestra
+                continue
+
             X_batch = X_train[batch_idx]
             r_batch = r_train[batch_idx]
 
@@ -398,16 +401,13 @@ def walk_forward_cv(precios, activos, k=50, n_folds=5,
 
 def graficar_walk_forward_cv(resultados: list, k: int = 50):
     """
-    Grilla de subplots: un panel por fold mostrando la evolución del
-    Sharpe ratio (train y val) a lo largo de las épocas de entrenamiento.
+    Una columna (5×1) para Overleaf: un panel por fold mostrando la
+    evolución del Sharpe ratio (train y val) a lo largo de las épocas.
     """
     COLORES = ['#1f77b4', '#2ca02c', '#d62728', '#9467bd', '#ff7f0e']
 
     n_folds = len(resultados)
-    ncols   = min(3, n_folds)
-    nrows   = (n_folds + ncols - 1) // ncols
-
-    fig, axes = plt.subplots(nrows, ncols, figsize=(7 * ncols, 4.5 * nrows),
+    fig, axes = plt.subplots(n_folds, 1, figsize=(7.5, 3 * n_folds),
                              facecolor='white')
     fig.patch.set_facecolor('white')
 
@@ -420,46 +420,27 @@ def graficar_walk_forward_cv(resultados: list, k: int = 50):
         epocas = range(1, len(h['train_sharpe']) + 1)
 
         ax.set_facecolor('white')
-        ax.tick_params(colors='#333333', labelsize=9)
+        ax.tick_params(colors='#333333', labelsize=8)
         ax.spines[:].set_color('#cccccc')
-        ax.yaxis.grid(True, color='#dddddd', lw=0.6)
+        ax.yaxis.grid(True, color='#dddddd', lw=0.5)
         ax.xaxis.grid(False)
 
         ax.plot(epocas, h['train_sharpe'],
-                color=color, lw=1.5, alpha=0.40, label='Train')
+                color=color, lw=1.2, alpha=0.40, label='Train')
         ax.plot(epocas, h['val_sharpe'],
-                color=color, lw=2.2, label='Val')
+                color=color, lw=1.8, label='Val')
 
         best_idx = int(np.argmax(h['val_sharpe']))
         best_val = h['val_sharpe'][best_idx]
-        ax.scatter(best_idx + 1, best_val, color=color, s=70, zorder=5)
-        offset_x = max(1, len(epocas) * 0.05)
-        ax.annotate(f'SR={best_val:.3f}',
-                    xy=(best_idx + 1, best_val),
-                    xytext=(best_idx + 1 + offset_x, best_val + 0.02),
-                    color=color, fontsize=8,
-                    arrowprops=dict(arrowstyle='->', color=color, lw=1))
+        ax.scatter(best_idx + 1, best_val, color=color, s=40, zorder=5)
 
-        ax.axhline(0, color='#aaaaaa', lw=0.8, linestyle=':')
-        ax.set_title(
-            f'Fold {res["fold"]}  —  train: {res["T_train"]} d  ·  val: {res["T_val"]} d\n'
-            f'Sharpe val: {res["sharpe_val"]:+.4f}',
-            color='#111111', fontsize=11, fontweight='bold')
-        ax.set_xlabel('Época', color='#444444', fontsize=10)
-        ax.set_ylabel(r'Sharpe $L_T$', color='#444444', fontsize=10)
+        ax.axhline(0, color='#aaaaaa', lw=0.7, linestyle=':')
+        ax.set_title(f'Fold {res["fold"]}', color='#111111',
+                     fontsize=9, fontweight='bold', pad=4)
+        ax.set_xlabel('Época', color='#444444', fontsize=8)
+        ax.set_ylabel(r'$L_T$', color='#444444', fontsize=8)
         ax.legend(facecolor='white', edgecolor='#cccccc',
-                  labelcolor='#111111', fontsize=9)
-
-    for j in range(n_folds, len(axes_flat)):
-        axes_flat[j].set_visible(False)
-
-    sharpes = [r['sharpe_val'] for r in resultados]
-    fig.suptitle(
-        f'Walk-Forward CV — LSTM k={k} días  ·  L2 reg (weight_decay=1e-4)\n'
-        f'Sharpe promedio: {np.mean(sharpes):+.4f}  ·  '
-        f'min: {np.min(sharpes):+.4f}  ·  max: {np.max(sharpes):+.4f}\n'
-        'Zhang, Zohren & Roberts (2020)  ·  2015-01-01 → 2026-03-16',
-        color='#111111', fontsize=12, fontweight='bold', y=1.02)
+                  labelcolor='#111111', fontsize=7, loc='lower right')
 
     plt.tight_layout()
     out = 'walk_forward_cv.png'
